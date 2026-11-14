@@ -9,8 +9,12 @@ plugins {
 }
 
 // Load keystore properties. Local test releases fall back to debug signing when
-// a complete release keystore is unavailable.
-val keystorePropertiesFile = rootProject.file("keystore.properties")
+// a complete release keystore is unavailable. The file may live outside the repository:
+// -Ppsx2.keystoreProperties=<path> or PSX2_KEYSTORE_PROPERTIES=<path>.
+val keystorePropertiesPath = (findProperty("psx2.keystoreProperties") as String?)
+    ?: System.getenv("PSX2_KEYSTORE_PROPERTIES")
+val keystorePropertiesFile =
+    if (keystorePropertiesPath != null) file(keystorePropertiesPath) else rootProject.file("keystore.properties")
 val keystoreProperties = Properties()
 if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
@@ -55,11 +59,12 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.izzy2lost.psx2"
+        // The ECP fork installs beside PSX2 from the Play Store.
+        applicationId = "com.izzy2lost.psx2.ecp"
         minSdk = 26
         targetSdk = 36
         versionCode = 34
-        versionName = "1.3.2"
+        versionName = "1.3.2-ecp1"
 
         externalNativeBuild {
             cmake {
@@ -80,7 +85,7 @@ android {
 
     base {
         archivesName.set(
-            "PSX2_${defaultConfig.versionCode}_${SimpleDateFormat("yyyyMMddHHmm").format(Date())}"
+            "PSX2_ECP_${defaultConfig.versionCode}_${SimpleDateFormat("yyyyMMddHHmm").format(Date())}"
         )
     }
 

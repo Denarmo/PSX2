@@ -1362,9 +1362,8 @@ void Host::OnGameChanged(const std::string& title, const std::string& elf_overri
                          const std::string& disc_serial, u32 disc_crc, u32 current_crc) {
 }
 
-void Host::PumpMessagesOnCPUThread() {
-    // Drain queued CPU-thread work first: the arcade pointer handling below returns
-    // early for non-arcade games, which would otherwise strand these tasks forever.
+static void DrainCPUThreadTasks()
+{
     for (;;)
     {
         std::function<void()> task;
@@ -1377,6 +1376,12 @@ void Host::PumpMessagesOnCPUThread() {
         }
         task();
     }
+}
+
+void Host::PumpMessagesOnCPUThread() {
+    // Drain queued CPU-thread work first: the arcade pointer handling below returns
+    // early for non-arcade games, which would otherwise strand these tasks forever.
+    DrainCPUThreadTasks();
 
     std::deque<TouchscreenPointerUpdate> updates;
     {
@@ -1788,8 +1793,15 @@ Java_com_izzy2lost_psx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
                 s_execute_exit = false;
                 VMManager::Execute();
                 s_execute_exit = true;
+            } else if (_vmState == VMState::Resetting) {
+                // VMManager::Reset() only flags a running VM; the reset itself
+                // happens here, once execution has left the recompiler.
+                VMManager::Reset();
             } else {
-                usleep(250000);
+                // Paused: keep serving queued CPU-thread work (speed, reset) so it
+                // does not wait for the game to resume.
+                DrainCPUThreadTasks();
+                usleep(20000);
             }
         }
         ////
@@ -2573,4 +2585,206 @@ Java_com_izzy2lost_psx2_NativeApp_getMemoryCardSaves(JNIEnv* env, jclass, jstrin
     }
 
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// Emulator Control Protocol (ECP) support, used by EcpSession.java. See ECP.md.
+// Settings written here go to the in-memory base layer only, like every other
+// setter in this file, so nothing a frontend sends is stored.
+// ---------------------------------------------------------------------------
+
+static void EcpApplySettingsNow()
+{
+    if (VMManager::HasValidVM())
+        VMManager::ApplySettings();
+    if (MTGS::IsOpen())
+        MTGS::ApplySettings();
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpSetIniValue(JNIEnv* env, jclass, jstring p_section, jstring p_key,
+                                                 jstring p_value)
+{
+    const std::string section = GetJavaString(env, p_section);
+    const std::string key = GetJavaString(env, p_key);
+    const std::string value = GetJavaString(env, p_value);
+    s_settings_interface.SetStringValue(section.c_str(), key.c_str(), value.c_str());
+    EcpApplySettingsNow();
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpGetIniValue(JNIEnv* env, jclass, jstring p_section, jstring p_key,
+                                                 jstring p_default)
+{
+    const std::string section = GetJavaString(env, p_section);
+    const std::string key = GetJavaString(env, p_key);
+    std::string value = GetJavaString(env, p_default);
+    s_settings_interface.GetStringValue(section.c_str(), key.c_str(), &value);
+    return env->NewStringUTF(value.c_str());
+}
+
+// [fps, target_fps, speed (1.0 = full), frame_ms, cpu_ms, gpu_ms, internal_fps, frame_number]
+extern "C"
+JNIEXPORT jfloatArray JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpGetPerf(JNIEnv* env, jclass)
+{
+    float values[8] = {};
+    if (VMManager::HasValidVM())
+    {
+        values[0] = PerformanceMetrics::GetFPS();
+        values[1] = VMManager::GetFrameRate();
+        values[2] = PerformanceMetrics::GetSpeed() / 100.0f;
+        values[3] = PerformanceMetrics::GetAverageFrameTime();
+        values[4] = static_cast<float>(PerformanceMetrics::GetCPUThreadAverageTime());
+        values[5] = PerformanceMetrics::GetGPUAverageTime();
+        values[6] = PerformanceMetrics::IsInternalFPSValid() ? PerformanceMetrics::GetInternalFPS() : values[0];
+        values[7] = static_cast<float>(PerformanceMetrics::GetFrameNumber());
+    }
+    jfloatArray result = env->NewFloatArray(8);
+    if (result)
+        env->SetFloatArrayRegion(result, 0, 8, values);
+    return result;
+}
+
+// The current frame as [width, height, ARGB pixels...], or null. The GS thread
+// renders it; while the game runs the request goes through the CPU thread,
+// while paused it is taken directly, as saveStateToSlot does.
+extern "C"
+JNIEXPORT jintArray JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpCaptureFrame(JNIEnv* env, jclass, jint p_max_width, jint p_max_height)
+{
+    if (!VMManager::HasValidVM() || !MTGS::IsOpen())
+        return nullptr;
+
+    u32 width = 0, height = 0;
+    std::vector<u32> pixels;
+    bool ok = false;
+    const auto capture = [&]() {
+        ok = MTGS::SaveMemorySnapshot(static_cast<u32>(p_max_width), static_cast<u32>(p_max_height), true, false,
+            &width, &height, &pixels);
+    };
+
+    if (VMManager::GetState() == VMState::Running)
+    {
+        Host::RunOnCPUThread(capture, true);
+    }
+    else
+    {
+        for (int i = 0; i < 100 && !s_execute_exit; ++i)
+            usleep(10000);
+        if (s_execute_exit)
+            capture();
+    }
+
+    if (!ok || width == 0 || height == 0 || pixels.size() < static_cast<size_t>(width) * height)
+        return nullptr;
+
+    // RGBA bytes in memory (0xAABBGGRR) to Android's 0xAARRGGBB, opaque.
+    const size_t count = static_cast<size_t>(width) * height;
+    std::vector<jint> out(count + 2);
+    out[0] = static_cast<jint>(width);
+    out[1] = static_cast<jint>(height);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const u32 p = pixels[i];
+        out[i + 2] = static_cast<jint>(0xFF000000u | ((p & 0xFFu) << 16) | (p & 0xFF00u) | ((p >> 16) & 0xFFu));
+    }
+    jintArray result = env->NewIntArray(static_cast<jsize>(out.size()));
+    if (result)
+        env->SetIntArrayRegion(result, 0, static_cast<jsize>(out.size()), out.data());
+    return result;
+}
+
+// 0 = nominal, 1 = turbo (fast forward), 2 = slow motion, 3 = unlimited.
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpSetLimiterMode(JNIEnv*, jclass, jint p_mode)
+{
+    LimiterModeType mode = LimiterModeType::Nominal;
+    switch (p_mode)
+    {
+        case 1: mode = LimiterModeType::Turbo; break;
+        case 2: mode = LimiterModeType::Slomo; break;
+        case 3: mode = LimiterModeType::Unlimited; break;
+        default: break;
+    }
+    const uint64_t generation = s_vm_start_generation.load(std::memory_order_acquire);
+    Host::RunOnCPUThread([generation, mode] {
+        if (s_vm_start_generation.load(std::memory_order_acquire) != generation || !VMManager::HasValidVM())
+            return;
+        VMManager::SetLimiterMode(mode);
+    });
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpReset(JNIEnv*, jclass)
+{
+    const uint64_t generation = s_vm_start_generation.load(std::memory_order_acquire);
+    Host::RunOnCPUThread([generation] {
+        if (s_vm_start_generation.load(std::memory_order_acquire) != generation || !VMManager::HasValidVM())
+            return;
+        VMManager::Reset();
+    });
+}
+
+// 0 = off, 1 = fps, 2 = timing, 3 = full (the same set as setHudVisible).
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpSetHudLevel(JNIEnv*, jclass, jint p_level)
+{
+    static constexpr const char* fps_keys[] = {"OsdShowFPS", "OsdShowSpeed"};
+    static constexpr const char* timing_keys[] = {"OsdShowCPU", "OsdShowGPU", "OsdShowFrameTimes"};
+    static constexpr const char* full_keys[] = {"OsdShowVPS", "OsdShowResolution", "OsdShowGSStats",
+        "OsdShowIndicators", "OsdShowSettings", "OsdShowInputs", "OsdShowVersion", "OsdShowHardwareInfo",
+        "OsdShowVideoCapture", "OsdShowInputRec"};
+    MemorySettingsInterface& si = s_settings_interface;
+    for (const char* key : fps_keys)
+        si.SetBoolValue("EmuCore/GS", key, p_level >= 1);
+    for (const char* key : timing_keys)
+        si.SetBoolValue("EmuCore/GS", key, p_level >= 2);
+    for (const char* key : full_keys)
+        si.SetBoolValue("EmuCore/GS", key, p_level >= 3);
+    EcpApplySettingsNow();
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpSetVolume(JNIEnv*, jclass, jint p_percent, jboolean p_muted)
+{
+    const int percent = std::clamp(static_cast<int>(p_percent), 0, 100);
+    MemorySettingsInterface& si = s_settings_interface;
+    si.SetIntValue("SPU2/Output", "StandardVolume", percent);
+    si.SetIntValue("SPU2/Output", "FastForwardVolume", percent);
+    si.SetBoolValue("SPU2/Output", "OutputMuted", p_muted == JNI_TRUE);
+    EcpApplySettingsNow();
+}
+
+// Deletes one slot (-1 = the resume slot) of the running game, with its backup.
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpDeleteStateSlot(JNIEnv*, jclass, jint p_slot)
+{
+    if (!VMManager::HasValidVM())
+        return JNI_FALSE;
+    VMManager::WaitForSaveStateFlush();
+    const std::string filename =
+        VMManager::GetSaveStateFileName(VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(), p_slot);
+    if (filename.empty() || !FileSystem::FileExists(filename.c_str()))
+        return JNI_FALSE;
+    const bool deleted = FileSystem::DeleteFilePath(filename.c_str());
+    const std::string backup = filename + ".backup";
+    if (FileSystem::FileExists(backup.c_str()))
+        FileSystem::DeleteFilePath(backup.c_str());
+    return deleted ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_izzy2lost_psx2_NativeApp_ecpNotify(JNIEnv* env, jclass, jstring p_text, jfloat p_seconds)
+{
+    if (VMManager::HasValidVM())
+        Host::AddOSDMessage(GetJavaString(env, p_text), std::clamp(static_cast<float>(p_seconds), 0.5f, 30.0f));
 }

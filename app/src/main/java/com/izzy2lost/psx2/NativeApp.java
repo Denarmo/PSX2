@@ -383,6 +383,18 @@ public class NativeApp {
 	public static native String getGamePathSlot(int slot);
 	public static native byte[] getImageSlot(int slot);
 
+	// Emulator Control Protocol (see ECP.md). Settings set here live in memory only.
+	public static native void ecpSetIniValue(String section, String key, String value);
+	public static native String ecpGetIniValue(String section, String key, String defaultValue);
+	public static native float[] ecpGetPerf();
+	public static native int[] ecpCaptureFrame(int maxWidth, int maxHeight);
+	public static native void ecpSetLimiterMode(int mode);
+	public static native void ecpReset();
+	public static native void ecpSetHudLevel(int level);
+	public static native void ecpSetVolume(int percent, boolean muted);
+	public static native boolean ecpDeleteStateSlot(int slot);
+	public static native void ecpNotify(String text, float seconds);
+
 	// Call jni
     public static int openContentUri(String uriString) {
         Context _context = getContext();

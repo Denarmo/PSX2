@@ -1,0 +1,13 @@
+{
+  "ecp": 1,
+  "id": "com.izzy2lost.psx2.ecp",
+  "name": "PSX2 ECP",
+  "version": "1.3.2-ecp1",
+  "level": 2,
+  "systems": ["ps2"],
+  "extensions": ["iso", "bin", "img", "mdf", "nrg", "chd", "cso", "zso", "gz"],
+  "capabilities": ["pause", "menu", "states", "state_thumbnails", "reset", "fast_forward",
+                   "slow_motion", "settings", "screenshot", "perf", "hud", "notify", "volume"],
+  "needs": ["bios"],
+  "settings": "schema"
+}

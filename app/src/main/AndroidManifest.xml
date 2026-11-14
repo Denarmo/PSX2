@@ -68,6 +68,25 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Emulator Control Protocol: a frontend starts one game here (see ECP.md). -->
+        <activity
+            android:name=".EcpPlayActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|touchscreen|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|density|fontScale|fontWeightAdjustment|layoutDirection|locale|colorMode"
+            android:launchMode="singleTask"
+            android:taskAffinity="${applicationId}.play"
+            android:autoRemoveFromRecents="true"
+            android:resizeableActivity="true"
+            android:enableOnBackInvokedCallback="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.github.ecp.action.PLAY" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data
+                android:name="io.github.ecp.descriptor"
+                android:resource="@raw/ecp" />
+        </activity>
     </application>
 
 </manifest>

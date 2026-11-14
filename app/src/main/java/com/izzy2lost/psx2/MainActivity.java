@@ -152,6 +152,44 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
                 .getBoolean(PREF_BOOT_BIOS_ON_START, false);
     }
 
+    // Hooks for EcpPlayActivity, which runs one game for a frontend (see ECP.md).
+    // MainActivity itself keeps the defaults, so its behaviour is unchanged.
+
+    /** True when this activity was started to run one game, not to show the library. */
+    protected boolean isLaunchedForGame() { return false; }
+
+    /** True while a frontend owns the menu: PSX2's own menus and dialogs stay closed. */
+    protected boolean isFrontendMenuAttached() { return false; }
+
+    /** Called instead of opening a PSX2 menu while a frontend owns the menu. */
+    protected void onFrontendMenuRequested(String source) {}
+
+    /** An extra pause owner held by a frontend. */
+    protected boolean isFrontendPauseRequested() { return false; }
+
+    /** Runs after the stored settings are applied and before the VM starts. */
+    protected void applySessionSettings() {}
+
+    /** Called on the emulation thread when the VM thread ends; return true to skip the error dialog. */
+    protected boolean onEmulationThreadEnded(boolean started, String startupError) { return false; }
+
+    /** Lets a subclass see input first; return true to consume the event. */
+    protected boolean onSessionInputEvent(InputEvent event) { return false; }
+
+    /** Starts the given game, replacing any running one. */
+    protected void startSessionGame(String gameUri) {
+        m_szGamefile = gameUri;
+        restartEmuThread();
+    }
+
+    /** Re-evaluates every pause owner and pauses or resumes the VM to match. */
+    protected void refreshPauseState(String reason) {
+        runOnUiThread(() -> {
+            reconcileAutomaticPauseOwners();
+            applyRequestedPauseState(reason);
+        });
+    }
+
     @Override
     public void onConfigurationChanged(@NonNull Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
@@ -736,7 +774,8 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
         applyConstraintsForOrientation(currentOrientation);
       
         // Prompt for BIOS if missing, but only after first-run setup
-        if (getSharedPreferences("app_prefs", MODE_PRIVATE).getBoolean("first_run_done", false)) {
+        if (!isLaunchedForGame()
+                && getSharedPreferences("app_prefs", MODE_PRIVATE).getBoolean("first_run_done", false)) {
             maybePromptForBios();
         }
 
@@ -750,8 +789,10 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
         // Show first-run setup wizard if needed
         SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
         boolean firstRunDone = prefs.getBoolean("first_run_done", false);
-        
-        if (!firstRunDone) {
+
+        if (isLaunchedForGame()) {
+            // The game comes from the starting intent; no setup wizard or library.
+        } else if (!firstRunDone) {
             SetupWizardDialogFragment f = SetupWizardDialogFragment.newInstance();
             f.setCancelable(false);
             f.show(getSupportFragmentManager(), "setup_wizard");
@@ -777,14 +818,14 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
         addPictureInPictureSupport();
 
         // Offer RetroAchievements re-login after a short delay (if previously enabled)
-        scheduleRetroAchievementsReLoginPrompt();
+        if (!isLaunchedForGame()) scheduleRetroAchievementsReLoginPrompt();
     }
-    
+
     @Override
     protected void onUserLeaveHint() {
         super.onUserLeaveHint();
         // Automatically enter PiP mode when user presses home button during gameplay
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !isFrontendMenuAttached()) {
             if (hasSelectedGame() && isThread() && !isInPictureInPictureMode()) {
                 enterPictureInPictureMode();
             }
@@ -830,7 +871,8 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
         OnBackPressedCallback callback = new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
-                showExitDialog();
+                if (isFrontendMenuAttached()) onFrontendMenuRequested("back");
+                else showExitDialog();
             }
         };
         getOnBackPressedDispatcher().addCallback(this, callback);
@@ -844,6 +886,10 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
         MaterialButton btn_settings = findViewById(R.id.btn_settings);
         if (btn_settings != null) {
             btn_settings.setOnClickListener(v -> {
+                if (isFrontendMenuAttached()) {
+                    onFrontendMenuRequested("menu_button");
+                    return;
+                }
                 try {
                     // Just open the drawer - let the drawer listener handle pausing
                     DrawerLayout drawer = findViewById(R.id.drawer_layout);
@@ -860,6 +906,10 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
         MaterialButton btn_pause_play = findViewById(R.id.btn_pause_play);
         if (btn_pause_play != null) {
             btn_pause_play.setOnClickListener(v -> {
+                if (isFrontendMenuAttached()) {
+                    onFrontendMenuRequested("pause_button");
+                    return;
+                }
                 try {
                     togglePauseState();
                 } catch (Throwable ignored) {}
@@ -1350,6 +1400,8 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
             return true;
         }
 
+        // A frontend reports the missing BIOS itself (bios_missing).
+        if (isFrontendMenuAttached()) return false;
         showBiosPrompt();
         Toast.makeText(this, arcadeGame
                         ? "This game requires a COH-H arcade BIOS; a retail PS2 BIOS will not work."
@@ -1977,6 +2029,7 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
             // Reapply on every boot, including surface-triggered starts and game switches.
             // This also clears graphics overrides left in the base layer by the last game.
             applySavedSettings();
+            applySessionSettings();
             // Restore global cards, then apply this exact file URI's overrides before boot.
             MemoryCardSettings.applyForGame(this, gameFile);
             // Must run before prepareVMStart/runVMThread: the first MTGS::Open (inside
@@ -1988,8 +2041,10 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
             Thread emulationThread = new Thread(() -> {
                 try {
                     final boolean started = NativeApp.runVMThread(gameFile);
-                    if (!started && !TextUtils.isEmpty(gameFile)) {
-                        final String startupError = NativeApp.getLastVMError();
+                    final String startupError = started ? "" : NativeApp.getLastVMError();
+                    if (onEmulationThreadEnded(started, startupError)) {
+                        // The session reports the result itself.
+                    } else if (!started && !TextUtils.isEmpty(gameFile)) {
                         if (!TextUtils.isEmpty(startupError)) {
                             runOnUiThread(() -> {
                                 if (isFinishing() || isDestroyed()) return;
@@ -2093,6 +2148,7 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
+        if (onSessionInputEvent(event)) return true;
         // Use only our controller handler - disable SDL fallback to avoid conflicts
         if (mControllerInputHandler != null && mControllerInputHandler.handleMotionEvent(event)) {
             return true;
@@ -2104,6 +2160,7 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (onSessionInputEvent(event)) return true;
         // Allow dialogs to receive DPAD navigation when visible
         if (!isAnyAppDialogShowing()) {
             // Intercept controller DPAD/gamepad keys before focused views consume them
@@ -2337,7 +2394,9 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
     public void onControllerCombo(int controllerId, String comboName) {
         android.util.Log.d("Controller", "Controller " + controllerId + " combo: " + comboName);
         
-        if ("select_start".equals(comboName)) {
+        if ("select_start".equals(comboName) && isFrontendMenuAttached()) {
+            runOnUiThread(() -> onFrontendMenuRequested("select_start"));
+        } else if ("select_start".equals(comboName)) {
             // Dialog tracking owns the temporary pause. Do not turn it into a user
             // pause, otherwise closing Quick Actions leaves the game stuck paused.
             runOnUiThread(() -> {
@@ -2606,6 +2665,7 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
                 "• This emulator is for educational and preservation purposes\n\n" +
                 "Licensed under GNU General Public License v3.0\n" +
                 "Source code: https://github.com/izzy2lost/PSX2\n" +
+                "This PSX2 ECP build adds the Emulator Control Protocol; its source: https://github.com/Denarmo/PSX2 (branch ecp)\n" +
                 "View full license: https://github.com/izzy2lost/PSX2/blob/master/LICENSE";
 
         new MaterialAlertDialogBuilder(this,
@@ -2672,7 +2732,8 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
     }
 
     private boolean isAutomaticPauseRequested() {
-        return mActivityPauseRequested || mOpenDialogCount > 0 || mOpenDrawerCount > 0;
+        return mActivityPauseRequested || mOpenDialogCount > 0 || mOpenDrawerCount > 0
+                || isFrontendPauseRequested();
     }
 
     private void applyRequestedPauseStateDelayed(String reason) {

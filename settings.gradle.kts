@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "PSX2"
 include(":app")
+include(":ecp")
+project(":ecp").projectDir = file("ecp-sdk")

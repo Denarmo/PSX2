@@ -2625,12 +2625,14 @@ Java_com_izzy2lost_psx2_NativeApp_ecpGetIniValue(JNIEnv* env, jclass, jstring p_
     return env->NewStringUTF(value.c_str());
 }
 
-// [fps, target_fps, speed (1.0 = full), frame_ms, cpu_ms, gpu_ms, internal_fps, frame_number]
+// [fps, target_fps, speed (1.0 = full), frame_ms, cpu_ms, gpu_ms, internal_fps, frame_number,
+//  drawn_frames]. drawn_frames counts presented frames that drew something (hardware
+// renderers; the frame number otherwise) and never resets.
 extern "C"
 JNIEXPORT jfloatArray JNICALL
 Java_com_izzy2lost_psx2_NativeApp_ecpGetPerf(JNIEnv* env, jclass)
 {
-    float values[8] = {};
+    float values[9] = {};
     if (VMManager::HasValidVM())
     {
         values[0] = PerformanceMetrics::GetFPS();
@@ -2641,10 +2643,12 @@ Java_com_izzy2lost_psx2_NativeApp_ecpGetPerf(JNIEnv* env, jclass)
         values[5] = PerformanceMetrics::GetGPUAverageTime();
         values[6] = PerformanceMetrics::IsInternalFPSValid() ? PerformanceMetrics::GetInternalFPS() : values[0];
         values[7] = static_cast<float>(PerformanceMetrics::GetFrameNumber());
+        std::atomic_thread_fence(std::memory_order_acquire);
+        values[8] = GSIsHardwareRenderer() ? static_cast<float>(s_total_drawn_frames) : values[7];
     }
-    jfloatArray result = env->NewFloatArray(8);
+    jfloatArray result = env->NewFloatArray(9);
     if (result)
-        env->SetFloatArrayRegion(result, 0, 8, values);
+        env->SetFloatArrayRegion(result, 0, 9, values);
     return result;
 }
 

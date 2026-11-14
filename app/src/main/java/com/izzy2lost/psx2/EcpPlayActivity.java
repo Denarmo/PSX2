@@ -2,12 +2,13 @@ package com.izzy2lost.psx2;
 
 import android.content.Intent;
 import android.os.Bundle;
-import android.text.TextUtils;
 import android.util.Log;
 import android.view.InputEvent;
 
 import androidx.annotation.NonNull;
 import androidx.drawerlayout.widget.DrawerLayout;
+
+import io.github.ecp.EcpEngine;
 
 /**
  * The Emulator Control Protocol entry point (io.github.ecp.action.PLAY, see ECP.md). It is the
@@ -25,8 +26,8 @@ public class EcpPlayActivity extends MainActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         Intent intent = getIntent();
-        if (EcpSession.hasEcpExtras(intent)) {
-            mSession = new EcpSession(this, intent);
+        mSession = EcpSession.from(this, intent);
+        if (mSession != null) {
             mSession.start();
         } else if (intent != null && intent.getData() != null) {
             startSessionGame(intent.getDataString());
@@ -40,13 +41,13 @@ public class EcpPlayActivity extends MainActivity {
     protected void onNewIntent(@NonNull Intent intent) {
         super.onNewIntent(intent);
         // The frontend brings the game back with REORDER_TO_FRONT, often with the same extras.
-        if (!EcpSession.hasEcpExtras(intent)) return;
-        String token = intent.getStringExtra(EcpSession.EXTRA_TOKEN);
-        if (mSession != null && TextUtils.equals(token, mSession.token())) return;
+        if (mSession != null && EcpEngine.Companion.isBringBack(intent, mSession.intentSession())) return;
+        EcpSession next = EcpSession.from(this, intent);
+        if (next == null) return;
         Log.i(TAG, "New ECP session replaces the current one");
         setIntent(intent);
         if (mSession != null) mSession.onActivityDestroyed();
-        mSession = new EcpSession(this, intent);
+        mSession = next;
         mSession.start();
     }
 
@@ -86,6 +87,12 @@ public class EcpPlayActivity extends MainActivity {
     @Override
     protected boolean isLaunchedForGame() {
         return true;
+    }
+
+    /** Never boot the PS2 menu while waiting for launch. */
+    @Override
+    public boolean isBootBiosOnStartEnabled() {
+        return false;
     }
 
     @Override

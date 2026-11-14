@@ -28,7 +28,7 @@ with its library, settings and menus. The ECP work is in these places:
 | `EcpPlayActivity.java` | A subclass of `MainActivity`, the normal game screen, that owns one session. Without the ECP extras (level 0) it boots the intent's data with PSX2's own menus. |
 | `EcpSession.java` | The session on top of the SDK's `EcpEngine`: launch, lifecycle events, every level 2 request, the menu chord and the menu hand-over. |
 | `EcpSettings.java` | The settings schema: the standard keys PSX2 has and its own under `psx2.`. |
-| `ecp-sdk/` | The ECP Android SDK (MIT), vendored unchanged from the protocol repository as the Gradle module `:ecp`. It does the channel (loopback TCP, framing, auth), hello, request routing and `MENU_INTENT`. Only its build file differs, because PSX2 uses AGP 9's built-in Kotlin. |
+| `ecp-sdk/` | The ECP Android SDK (MIT), vendored unchanged from the protocol repository (commit `6a3a1d3`, build file included) as the Gradle module `:ecp`. It does the channel (loopback TCP, framing, auth), hello, request routing, the `paused`/`resumed` bookkeeping, `stopped` and `MENU_INTENT`. Requests run one at a time on the SDK's own worker thread, so handlers block on the core where PSX2 does (a state save waits up to 5 s); `stop` and a closed channel come on its separate control thread. Anything that touches the activity goes through `runOnUiThread`. |
 | `MainActivity.java` | Protected hooks with no-op defaults, so the base activity behaves as upstream: `isLaunchedForGame`, `isFrontendMenuAttached`, `onFrontendMenuRequested`, `isFrontendPauseRequested`, `applySessionSettings`, `onEmulationThreadEnded`, `onSessionInputEvent`, `startSessionGame`, `refreshPauseState`. |
 | `NativeApp.java`, `cpp/native-lib.cpp` | New JNI functions prefixed `ecp` (below). Two changes to the VM loop that also apply to PSX2's own UI: while paused it now serves queued CPU-thread work (it used to sleep 250 ms and leave the queue alone, so a speed change made while paused waited for the game to resume), and it carries out a requested reset (`VMState::Resetting` used to leave the loop idling for ever). |
 | `app/build.gradle.kts` | `applicationId`, `versionName` `1.3.2-ecp1`, APK name, and signing from a properties file outside the tree (`-Ppsx2.keystoreProperties=<path>` or `PSX2_KEYSTORE_PROPERTIES`). |
@@ -86,7 +86,7 @@ wizard, the game library, the BIOS prompt and the RetroAchievements prompt.
 | `notify` | `notify` | `ecpNotify`: `Host::AddOSDMessage`. |
 | `perf` event | `perf` | Once a second while not paused, from `ecpGetPerf`: `fps` (`PerformanceMetrics::GetFPS`, vertical syncs), `target_fps` (`VMManager::GetFrameRate`), `speed`, `frame_ms`, `cpu_ms`, `gpu_ms`, plus `internal_fps` (the game's own frame rate where PCSX2 can tell). |
 | `get_schema`, `get_settings`, `set_setting` | `settings` | `EcpSettings` (below). |
-| `stop` | | `NativeApp.shutdown()` (the core writes the memory cards as it shuts down), wait for the VM thread, answer, `stopped` (`frontend`), finish. Runs on its own thread so a slow request cannot hold it up. |
+| `stop` | | `NativeApp.shutdown()` (the core writes the memory cards as it shuts down), wait for the VM thread, answer, `stopped` (`frontend`), finish. It runs on the SDK's control thread, so a slow request cannot hold it up. |
 | channel closed | | The same shutdown without events, then the activity finishes; `onDestroy` ends the process as PSX2's own exit does. |
 
 Slots: ECP slot 0, the frontend's resume slot, is PCSX2's resume state (`<serial> (<crc>).resume.p2s`).
@@ -170,6 +170,9 @@ moment the frontend starts it. It shows black until the game boots.
   frontend's menu does not appear; `menu_request` and `paused` still arrive.
 
 ## Verified
+
+The figures below are from the build before the SDK update to commit `6a3a1d3` (SDK worker
+threads, Java names, `stopped` detail). That build has not been re-run on the device yet.
 
 On a Retroid Pocket Duo (Android 16), release build signed with the PSX2 ECP key, Colin McRae
 Rally 3 (PAL), `ecp-probe --adb` with `--menu-timeout` (Back pressed on the device): 46 passed,

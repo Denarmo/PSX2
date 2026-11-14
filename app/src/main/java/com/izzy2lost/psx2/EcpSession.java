@@ -64,7 +64,6 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
     // PSX2 pauses the VM to save or load a state; that is not a pause to report.
     private volatile boolean mStateBusy;
     private volatile long mIgnoreInputBefore;
-    private Boolean mSentPaused;
     private long mLastPerf;
     private float mDrawnAtLaunch;
 
@@ -86,7 +85,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
 
     /** A session for the intent's ECP extras, or null when it has none (level 0). */
     static EcpSession from(EcpPlayActivity activity, Intent intent) {
-        EcpEngine.Session session = EcpEngine.Session.Companion.from(intent);
+        EcpEngine.Session session = EcpEngine.Session.from(intent);
         return session == null ? null : new EcpSession(activity, session);
     }
 
@@ -99,9 +98,9 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         Log.i(TAG, "Session " + mIntentSession.getId() + ": connecting to port " + mIntentSession.getPort());
         mWorker.execute(() -> {
             try {
-                // Callbacks run on the channel's reader thread and hand the work to mWorker,
-                // except stop, which must not wait behind a slow save (see onRequest).
-                mEngine = new EcpEngine(descriptor(), this, Runnable::run);
+                // The SDK runs requests one at a time on its own worker thread, so handlers may
+                // block on the core; stop and onClosed come on a separate control thread.
+                mEngine = new EcpEngine(descriptor(), this);
                 mEngine.connect(mIntentSession);
             } catch (Exception e) {
                 Log.e(TAG, "Unable to reach the frontend", e);
@@ -179,15 +178,15 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
             String code = "content_invalid";
             String text = TextUtils.isEmpty(startupError) ? "PSX2 could not start this game." : startupError;
             if (text.toLowerCase(Locale.ROOT).contains("bios")) code = "bios_missing";
-            sendStopped("error", error(code, text, startupError));
+            sendStopped("error", code, text, startupError);
         } else {
-            sendStopped("user", null);
+            sendStopped("user", null, null, null);
         }
         endSession(false);
     }
 
     void onActivityDestroyed() {
-        if (!mStopping && mLaunched) sendStopped("user", null);
+        if (!mStopping && mLaunched) sendStopped("user", null, null, null);
         mStopping = true;
         closeEngine();
         mTimer.shutdownNow();
@@ -238,25 +237,24 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
     }
 
     // ---------------------------------------------------------------------------------------
-    // EcpEngine.Callbacks: every request goes through onRequest.
+    // EcpEngine.Callbacks: requests arrive on the SDK's worker thread and go through handleRequest.
 
-    @Override public void handleLaunch(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleStop(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handlePause(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleResume(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleSaveState(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleLoadState(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleListStates(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleDeleteState(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleGetSchema(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleGetSettings(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleSetSetting(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleReset(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleSetSpeed(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleScreenshot(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleSetVolume(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleHudLevel(EcpEngine.Request r) { onRequest(r); }
-    @Override public void handleNotify(EcpEngine.Request r) { onRequest(r); }
+    @Override public void handleLaunch(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handlePause(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleResume(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleSaveState(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleLoadState(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleListStates(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleDeleteState(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleGetSchema(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleGetSettings(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleSetSetting(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleReset(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleSetSpeed(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleScreenshot(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleSetVolume(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleHudLevel(EcpEngine.Request r) { handleRequest(r); }
+    @Override public void handleNotify(EcpEngine.Request r) { handleRequest(r); }
     @Override public void handleSetRewind(EcpEngine.Request r) { r.unsupported(); }
     @Override public void handleSetCheats(EcpEngine.Request r) { r.unsupported(); }
     @Override public void handleListDiscs(EcpEngine.Request r) { r.unsupported(); }
@@ -268,34 +266,23 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         onFrontendHello(frontend);
     }
 
-    private void onRequest(EcpEngine.Request r) {
-        final String type = r.getType();
-        final long id = r.getId();
-        final JSONObject msg = r.getMsg();
-        if ("stop".equals(type)) {
-            // Not queued behind a slow request: stop has a 5 s budget.
-            new Thread(() -> handleStop(id), "EcpStop").start();
-            return;
-        }
-        mWorker.execute(() -> {
-            try {
-                handleRequest(type, id, msg);
-            } catch (Throwable t) {
-                Log.e(TAG, type + " failed", t);
-                replyError(id, "internal", "PSX2 could not do that.", String.valueOf(t));
-            }
-        });
+    /** On the SDK's control thread, so a slow request never holds it up (5 s budget). */
+    @Override
+    public void handleStop(EcpEngine.Request r) {
+        mStopping = true;
+        shutdownVm();
+        r.ok();
+        sendStopped("frontend", null, null, null);
+        endSession(true);
     }
 
+    /** On the SDK's control thread. SPEC 4: without a frontend, save and exit within 5 s. */
     @Override
     public void onClosed(String reason) {
         Log.i(TAG, "Channel closed: " + reason);
         if (mStopping) return;
-        // SPEC 4: without a frontend, save and exit within 5 s.
-        new Thread(() -> {
-            shutdownVm();
-            endSession(false);
-        }, "EcpClosed").start();
+        shutdownVm();
+        endSession(false);
     }
 
     private void closeEngine() {
@@ -325,9 +312,19 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         mActivity.runOnUiThread(mActivity::onSessionNegotiated);
     }
 
-    private void handleRequest(String type, long id, JSONObject msg) throws JSONException {
+    private void handleRequest(EcpEngine.Request r) {
+        String type = r.getType();
+        try {
+            dispatch(type, r);
+        } catch (Throwable t) {
+            Log.e(TAG, type + " failed", t);
+            r.error("internal", "PSX2 could not do that.", String.valueOf(t));
+        }
+    }
+
+    private void dispatch(String type, EcpEngine.Request r) throws JSONException {
         if (!mHelloDone && !"launch".equals(type)) {
-            replyError(id, "protocol", null, "request before hello");
+            r.error("protocol", null, "request before hello");
             return;
         }
         String needs = capabilityFor(type);
@@ -335,27 +332,27 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         boolean allowed = needs == null || mCaps.contains(needs)
                 || "resume".equals(type) && mCaps.contains("menu");
         if (!allowed) {
-            replyError(id, "unsupported", null, type + " needs " + needs);
+            r.error("unsupported", null, type + " needs " + needs);
             return;
         }
         switch (type) {
-            case "launch": handleLaunch(id, msg); break;
-            case "pause": handlePause(id); break;
-            case "resume": handleResume(id); break;
-            case "save_state": handleSaveState(id, msg); break;
-            case "load_state": handleLoadState(id, msg); break;
-            case "list_states": handleListStates(id); break;
-            case "delete_state": handleDeleteState(id, msg); break;
-            case "reset": handleReset(id); break;
-            case "set_speed": handleSetSpeed(id, msg); break;
-            case "screenshot": handleScreenshot(id); break;
-            case "set_volume": handleSetVolume(id, msg); break;
-            case "hud_level": handleHudLevel(id, msg); break;
-            case "notify": handleNotify(id, msg); break;
-            case "get_schema": reply(id, new JSONObject().put("settings", mSettings.schema())); break;
-            case "get_settings": reply(id, new JSONObject().put("values", mSettings.values())); break;
-            case "set_setting": handleSetSetting(id, msg); break;
-            default: replyError(id, "unsupported", null, "unknown request " + type);
+            case "launch": doLaunch(r); break;
+            case "pause": doPause(r); break;
+            case "resume": doResume(r); break;
+            case "save_state": doSaveState(r); break;
+            case "load_state": doLoadState(r); break;
+            case "list_states": doListStates(r); break;
+            case "delete_state": doDeleteState(r); break;
+            case "reset": doReset(r); break;
+            case "set_speed": doSetSpeed(r); break;
+            case "screenshot": doScreenshot(r); break;
+            case "set_volume": doSetVolume(r); break;
+            case "hud_level": doHudLevel(r); break;
+            case "notify": doNotify(r); break;
+            case "get_schema": r.ok(new JSONObject().put("settings", mSettings.schema())); break;
+            case "get_settings": r.ok(new JSONObject().put("values", mSettings.values())); break;
+            case "set_setting": doSetSetting(r); break;
+            default: r.error("unsupported", null, "unknown request " + type);
         }
     }
 
@@ -376,25 +373,25 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
     // ---------------------------------------------------------------------------------------
     // Lifecycle (SPEC 5)
 
-    private void handleLaunch(long id, JSONObject msg) throws JSONException {
+    private void doLaunch(EcpEngine.Request r) throws JSONException {
         if (mLaunched) {
-            replyError(id, "busy", "A game is already running.", "second launch");
+            r.error("busy", "A game is already running.", "second launch");
             return;
         }
         if (NativeApp.isVMActive() && !mActivity.isThread()) {
-            replyError(id, "busy", "PSX2 ECP is already running a game. Close it and try again.",
+            r.error("busy", "PSX2 ECP is already running a game. Close it and try again.",
                     "VM owned by another activity");
             return;
         }
 
-        String game = resolveContent(msg.optString("content"));
+        String game = resolveContent(r.getMsg().optString("content"));
         if (game == null) {
-            replyError(id, "content_missing", "The game file could not be opened.",
-                    "content " + msg.optString("content") + ", data " + mData + ", path " + mPath);
+            r.error("content_missing", "The game file could not be opened.",
+                    "content " + r.getMsg().optString("content") + ", data " + mData + ", path " + mPath);
             return;
         }
         if (game.toLowerCase(Locale.ROOT).endsWith(".acgame")) {
-            replyError(id, "content_invalid", "Arcade sets can only be started from PSX2's own library.",
+            r.error("content_invalid", "Arcade sets can only be started from PSX2's own library.",
                     ".acgame needs a folder grant");
             return;
         }
@@ -404,16 +401,16 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
                 || scan.byRegion.containsKey(BiosVerifier.Region.EUROPE)
                 || scan.byRegion.containsKey(BiosVerifier.Region.JAPAN);
         if (!hasBios) {
-            replyError(id, "bios_missing",
+            r.error("bios_missing",
                     "PSX2 ECP needs a PS2 BIOS dumped from your own console. Open PSX2 ECP from your "
                             + "app list, open its menu (top left) and choose Import / Manage BIOS.",
                     "no verified retail BIOS in " + BiosVerifier.getBiosDirectory(mActivity));
             return;
         }
 
-        JSONObject settings = msg.optJSONObject("settings");
+        JSONObject settings = r.getMsg().optJSONObject("settings");
         if (settings != null) mLaunchSettings = settings;
-        JSONArray chord = msg.optJSONArray("menu_chord");
+        JSONArray chord = r.getMsg().optJSONArray("menu_chord");
         if (chord != null) mChord = chordKeys(chord);
 
         // A previous session's game in this activity: stop it before the new one boots.
@@ -422,7 +419,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
             long until = SystemClock.uptimeMillis() + 5000;
             while (mActivity.isThread() && SystemClock.uptimeMillis() < until) sleep(50);
             if (mActivity.isThread()) {
-                replyError(id, "busy", "The previous game is still closing.", "VM did not stop");
+                r.error("busy", "The previous game is still closing.", "VM did not stop");
                 return;
             }
         }
@@ -430,10 +427,10 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         float[] perf = NativeApp.ecpGetPerf();
         mDrawnAtLaunch = perf != null && perf.length > 8 ? perf[8] : 0;
         mLaunched = true;
-        reply(id, new JSONObject());
-        Log.i(TAG, "Launching " + msg.optString("title", game) + " (" + msg.optString("game_id") + ")");
+        r.ok();
+        Log.i(TAG, "Launching " + r.getMsg().optString("title", game) + " (" + r.getMsg().optString("game_id") + ")");
         JSONObject loading = new JSONObject().put("type", "loading");
-        String title = msg.optString("title");
+        String title = r.getMsg().optString("title");
         if (!title.isEmpty()) loading.put("text", title);
         send(loading);
         mActivity.runOnUiThread(() -> mActivity.startSessionGame(game));
@@ -462,14 +459,6 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         return new File(candidate).canRead() ? candidate : null;
     }
 
-    private void handleStop(long id) {
-        mStopping = true;
-        shutdownVm();
-        reply(id, new JSONObject());
-        sendStopped("frontend", null);
-        endSession(true);
-    }
-
     /** Stops the VM, which writes the memory cards, and waits for its thread. */
     private void shutdownVm() {
         mStopping = true;
@@ -482,22 +471,18 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
 
     private void endSession(boolean alreadyStopped) {
         mStopping = true;
-        if (!alreadyStopped && mLaunched && !mStoppedSent && !mEnded) sendStopped("frontend", null);
+        if (!alreadyStopped && mLaunched && !mStoppedSent && !mEnded) sendStopped("frontend", null, null, null);
         closeEngine();
         mActivity.runOnUiThread(mActivity::finishSession);
     }
 
-    private void sendStopped(String reason, JSONObject error) {
+    private void sendStopped(String reason, String code, String message, String detail) {
         synchronized (this) {
             if (mStoppedSent) return;
             mStoppedSent = true;
         }
-        try {
-            JSONObject event = new JSONObject().put("type", "stopped").put("reason", reason);
-            if (error != null) event.put("error", error);
-            send(event);
-        } catch (JSONException ignored) {
-        }
+        EcpEngine engine = mEngine;
+        if (engine != null) engine.stopped(reason, code, message, TextUtils.isEmpty(detail) ? null : detail);
     }
 
     /** Runs every 50 ms once the game is launched: first frame, pause events, perf. */
@@ -511,8 +496,8 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
                 if (perf != null && perf.length > 8 && perf[7] > 0 && perf[8] >= mDrawnAtLaunch + 2
                         && NativeApp.isVMActive()) {
                     mFirstFrame = true;
-                    send(new JSONObject().put("type", "first_frame"));
-                    send(new JSONObject().put("type", "running"));
+                    mEngine.firstFrame();
+                    mEngine.running();
                     // runVMThread applies PSX2's per-game overrides after our launch settings;
                     // put back anything they changed.
                     mWorker.execute(this::reapplyLaunchSettings);
@@ -555,22 +540,22 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
     // ---------------------------------------------------------------------------------------
     // Pause and menu (SPEC 6.1, 6.2)
 
-    private void handlePause(long id) {
+    private void doPause(EcpEngine.Request r) {
         mFrontendPause = true;
         mActivity.refreshPauseState("ecp pause");
         if (mFirstFrame) waitPaused(true, 1000);
-        reply(id, new JSONObject());
+        r.ok();
         syncPauseEvent();
     }
 
-    private void handleResume(long id) {
+    private void doResume(EcpEngine.Request r) {
         mFrontendPause = false;
         mMenuOpen = false;
         ignoreHeldInput();
         mActivity.runOnUiThread(mActivity::bringToFront);
         mActivity.refreshPauseState("ecp resume");
         if (mFirstFrame) waitPaused(false, 2000);
-        reply(id, new JSONObject());
+        r.ok();
         syncPauseEvent();
     }
 
@@ -585,21 +570,13 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
 
     /** Sends paused or resumed when the VM's state differs from what the frontend was told. */
     private void syncPauseEvent() {
-        if (!mFirstFrame || mStopping || mStateBusy) return;
+        EcpEngine engine = mEngine;
+        if (!mFirstFrame || mStopping || mStateBusy || engine == null) return;
         synchronized (mPauseEventLock) {
             boolean paused = NativeApp.isPaused();
-            boolean told = mSentPaused != null && mSentPaused;
-            if (paused == told) return;
-            mSentPaused = paused;
-            try {
-                if (paused) {
-                    String reason = mMenuOpen ? "menu" : mFrontendPause ? "frontend" : "focus";
-                    send(new JSONObject().put("type", "paused").put("reason", reason));
-                } else {
-                    send(new JSONObject().put("type", "resumed"));
-                }
-            } catch (JSONException ignored) {
-            }
+            if (paused == engine.isPausedReported()) return;
+            if (paused) engine.paused(mMenuOpen ? "menu" : mFrontendPause ? "frontend" : "focus");
+            else engine.resumed();
         }
     }
 
@@ -610,7 +587,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
 
     private void sendMenuIntent() {
         if (mIntentSession.getMenuIntent() != null)
-            EcpEngine.Companion.sendMenuIntent(mActivity, mIntentSession.getMenuIntent());
+            EcpEngine.sendMenuIntent(mActivity, mIntentSession.getMenuIntent());
     }
 
     // ---------------------------------------------------------------------------------------
@@ -621,21 +598,21 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         return slot == 0 ? -1 : slot;
     }
 
-    private Integer slotOf(long id, JSONObject msg) {
-        int slot = msg.optInt("slot", -1);
+    private Integer slotOf(EcpEngine.Request r) {
+        int slot = r.getInt("slot", -1);
         if (slot < 0 || slot > SLOT_MAX) {
-            replyError(id, "protocol", null, "slot must be 0-99");
+            r.error("protocol", null, "slot must be 0-99");
             return null;
         }
         if (!mFirstFrame || !NativeApp.isVMActive()) {
-            replyError(id, "busy", "The game is still starting.", "no VM yet");
+            r.error("busy", "The game is still starting.", "no VM yet");
             return null;
         }
         return slot;
     }
 
-    private void handleSaveState(long id, JSONObject msg) throws JSONException {
-        Integer slot = slotOf(id, msg);
+    private void doSaveState(EcpEngine.Request r) throws JSONException {
+        Integer slot = slotOf(r);
         if (slot == null) return;
         long started = System.currentTimeMillis();
         boolean ok;
@@ -649,7 +626,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         File file = stateFile(slot);
         ok = ok && file != null && file.isFile() && file.lastModified() >= started - 2000;
         if (!ok) {
-            replyError(id, "busy", "The state could not be saved. Try again in a moment.",
+            r.error("busy", "The state could not be saved. Try again in a moment.",
                     "saveStateToSlot failed or wrote nothing (memory card busy?)");
             return;
         }
@@ -659,15 +636,15 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
             JSONObject frame = capture(640, 480, 640);
             if (frame != null) entry.put("thumbnail", frame);
         }
-        reply(id, entry);
+        r.ok(entry);
     }
 
-    private void handleLoadState(long id, JSONObject msg) {
-        Integer slot = slotOf(id, msg);
+    private void doLoadState(EcpEngine.Request r) {
+        Integer slot = slotOf(r);
         if (slot == null) return;
         File file = stateFile(slot);
         if (file == null || !file.isFile()) {
-            replyError(id, "slot_empty", "That slot is empty.", null);
+            r.error("slot_empty", "That slot is empty.", null);
             return;
         }
         boolean ok;
@@ -679,11 +656,11 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
             mStateBusy = false;
         }
         if (!ok) {
-            replyError(id, "state_incompatible", "This state cannot be loaded.",
+            r.error("state_incompatible", "This state cannot be loaded.",
                     "loadStateFromSlot failed (other version, hardcore mode or memory card busy)");
             return;
         }
-        reply(id, new JSONObject());
+        r.ok();
     }
 
     /** saveStateToSlot and loadStateFromSlot leave the VM paused; go back to what was asked. */
@@ -693,7 +670,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         waitPaused(mFrontendPause || mMenuOpen || !mActivity.hasWindowFocus(), 500);
     }
 
-    private void handleListStates(long id) throws JSONException {
+    private void doListStates(EcpEngine.Request r) throws JSONException {
         JSONArray states = new JSONArray();
         if (NativeApp.isVMActive() && mFirstFrame) {
             for (int slot = 0; slot <= SLOT_MAX; slot++) {
@@ -701,17 +678,17 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
                 if (file != null && file.isFile()) states.put(stateEntry(slot, file));
             }
         }
-        reply(id, new JSONObject().put("states", states));
+        r.ok(new JSONObject().put("states", states));
     }
 
-    private void handleDeleteState(long id, JSONObject msg) {
-        Integer slot = slotOf(id, msg);
+    private void doDeleteState(EcpEngine.Request r) {
+        Integer slot = slotOf(r);
         if (slot == null) return;
         if (!NativeApp.ecpDeleteStateSlot(coreSlot(slot))) {
-            replyError(id, "slot_empty", "That slot is empty.", null);
+            r.error("slot_empty", "That slot is empty.", null);
             return;
         }
-        reply(id, new JSONObject());
+        r.ok();
     }
 
     private File stateFile(int slot) {
@@ -728,7 +705,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
                 bounds.inJustDecodeBounds = true;
                 BitmapFactory.decodeByteArray(png, 0, png.length, bounds);
                 if (bounds.outWidth > 0) {
-                    entry.put("thumbnail", Ecp.INSTANCE.picture(png, bounds.outWidth, bounds.outHeight));
+                    entry.put("thumbnail", Ecp.picture(png, bounds.outWidth, bounds.outHeight));
                 }
             }
         }
@@ -738,22 +715,22 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
     // ---------------------------------------------------------------------------------------
     // Other controls (SPEC 6.5)
 
-    private void handleReset(long id) {
+    private void doReset(EcpEngine.Request r) {
         if (!NativeApp.isVMActive()) {
-            replyError(id, "busy", "The game is still starting.", "no VM yet");
+            r.error("busy", "The game is still starting.", "no VM yet");
             return;
         }
         NativeApp.ecpReset();
-        reply(id, new JSONObject());
+        r.ok();
     }
 
-    private void handleSetSpeed(long id, JSONObject msg) {
-        boolean ff = msg.optBoolean("fast_forward", false);
-        double factor = msg.optDouble("factor", Double.NaN);
+    private void doSetSpeed(EcpEngine.Request r) {
+        boolean ff = r.getBoolean("fast_forward", false);
+        double factor = r.getDouble("factor", Double.NaN);
         boolean slow = !Double.isNaN(factor) && factor < 1;
         if ((ff || (!slow && !Double.isNaN(factor))) && !mCaps.contains("fast_forward")
                 || slow && !mCaps.contains("slow_motion")) {
-            replyError(id, "unsupported", null, "set_speed needs fast_forward or slow_motion");
+            r.error("unsupported", null, "set_speed needs fast_forward or slow_motion");
             return;
         }
         if (slow) {
@@ -769,7 +746,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
             }
         }
         applySpeed();
-        reply(id, new JSONObject());
+        r.ok();
     }
 
     private void applySpeed() {
@@ -777,54 +754,54 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         NativeApp.ecpSetLimiterMode(mode);
     }
 
-    private void handleScreenshot(long id) throws JSONException {
+    private void doScreenshot(EcpEngine.Request r) throws JSONException {
         JSONObject image = capture(0, 0, 2560);
         if (image == null) {
-            replyError(id, "busy", "No picture is available yet.", "ecpCaptureFrame returned nothing");
+            r.error("busy", "No picture is available yet.", "ecpCaptureFrame returned nothing");
             return;
         }
-        reply(id, new JSONObject().put("image", image));
+        r.ok(new JSONObject().put("image", image));
     }
 
-    private void handleSetVolume(long id, JSONObject msg) {
-        if (msg.has("percent")) mVolume = Math.max(0, Math.min(100, msg.optInt("percent", mVolume)));
-        if (msg.has("mute")) mMuted = msg.optBoolean("mute", false);
+    private void doSetVolume(EcpEngine.Request r) {
+        if (r.getMsg().has("percent")) mVolume = Math.max(0, Math.min(100, r.getInt("percent", mVolume)));
+        if (r.getMsg().has("mute")) mMuted = r.getBoolean("mute", false);
         applyVolume();
-        reply(id, new JSONObject());
+        r.ok();
     }
 
     private void applyVolume() {
         NativeApp.ecpSetVolume(mVolume, mMuted);
     }
 
-    private void handleHudLevel(long id, JSONObject msg) {
-        NativeApp.ecpSetHudLevel(Math.max(0, Math.min(3, msg.optInt("level", 0))));
-        reply(id, new JSONObject());
+    private void doHudLevel(EcpEngine.Request r) {
+        NativeApp.ecpSetHudLevel(Math.max(0, Math.min(3, r.getInt("level", 0))));
+        r.ok();
     }
 
-    private void handleNotify(long id, JSONObject msg) {
-        String text = msg.optString("text");
-        if (!text.isEmpty()) NativeApp.ecpNotify(text, (float) msg.optDouble("seconds", 3));
-        reply(id, new JSONObject());
+    private void doNotify(EcpEngine.Request r) {
+        String text = r.getMsg().optString("text");
+        if (!text.isEmpty()) NativeApp.ecpNotify(text, (float) r.getDouble("seconds", 3));
+        r.ok();
     }
 
-    private void handleSetSetting(long id, JSONObject msg) throws JSONException {
-        String key = msg.optString("key");
+    private void doSetSetting(EcpEngine.Request r) throws JSONException {
+        String key = r.getMsg().optString("key");
         EcpSettings.Setting s = mSettings.get(key);
         if (s == null) {
-            replyError(id, "unsupported", null, "unknown setting " + key);
+            r.error("unsupported", null, "unknown setting " + key);
             return;
         }
-        Object value = msg.opt("value");
+        Object value = r.getMsg().opt("value");
         String problem = value == null ? "no value" : EcpSettings.validate(s, value);
         if (problem != null) {
-            replyError(id, "protocol", null, key + " " + problem);
+            r.error("protocol", null, key + " " + problem);
             return;
         }
         s.setter.set(value);
         // Kept for the session only, so a restart of the VM in this session applies it again.
         mLaunchSettings.put(key, value);
-        reply(id, new JSONObject().put("applied", s.applies));
+        r.ok(new JSONObject().put("applied", s.applies));
     }
 
     // EcpSettings.SessionState
@@ -856,7 +833,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
             bitmap = scaled;
         }
         try {
-            return Ecp.INSTANCE.picture(bitmap);
+            return Ecp.picture(bitmap);
         } finally {
             bitmap.recycle();
         }
@@ -904,25 +881,6 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
         return Float.isFinite(v) ? Math.round(v * 100.0) / 100.0 : 0.0;
     }
 
-    private static JSONObject error(String code, String message, String detail) {
-        return Ecp.INSTANCE.error(code, message, TextUtils.isEmpty(detail) ? null : detail);
-    }
-
-    private void reply(long id, JSONObject fields) {
-        try {
-            fields.put("type", "result").put("id", id).put("ok", true);
-            send(fields);
-        } catch (JSONException ignored) {
-        }
-    }
-
-    private void replyError(long id, String code, String message, String detail) {
-        try {
-            send(new JSONObject().put("type", "result").put("id", id).put("ok", false)
-                    .put("error", error(code, message, detail)));
-        } catch (JSONException ignored) {
-        }
-    }
 
     private void send(JSONObject message) {
         EcpEngine engine = mEngine;

@@ -41,7 +41,7 @@ public class EcpPlayActivity extends MainActivity {
     protected void onNewIntent(@NonNull Intent intent) {
         super.onNewIntent(intent);
         // The frontend brings the game back with REORDER_TO_FRONT, often with the same extras.
-        if (mSession != null && EcpEngine.Companion.isBringBack(intent, mSession.intentSession())) return;
+        if (mSession != null && EcpEngine.isBringBack(intent, mSession.intentSession())) return;
         EcpSession next = EcpSession.from(this, intent);
         if (next == null) return;
         Log.i(TAG, "New ECP session replaces the current one");

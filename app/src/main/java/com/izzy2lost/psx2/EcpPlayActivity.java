@@ -64,6 +64,7 @@ public class EcpPlayActivity extends MainActivity {
             drawer.setDrawerLockMode(isFrontendMenuAttached()
                     ? DrawerLayout.LOCK_MODE_LOCKED_CLOSED : DrawerLayout.LOCK_MODE_UNLOCKED);
         }
+        applyFrontendChrome();
     }
 
     /** SPEC 6.1: resume puts the engine back in the foreground if it isn't. */

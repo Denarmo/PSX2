@@ -161,6 +161,15 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
     /** True while a frontend owns the menu: PSX2's own menus and dialogs stay closed. */
     protected boolean isFrontendMenuAttached() { return false; }
 
+    /** While a frontend's menu is attached, it replaces PSX2's own settings and pause buttons. */
+    protected void applyFrontendChrome() {
+        if (!isFrontendMenuAttached()) return;
+        View settings = findViewById(R.id.btn_settings);
+        if (settings != null) settings.setVisibility(View.GONE);
+        View pause = findViewById(R.id.btn_pause_play);
+        if (pause != null) pause.setVisibility(View.GONE);
+    }
+
     /** Called instead of opening a PSX2 menu while a frontend owns the menu. */
     protected void onFrontendMenuRequested(String source) {}
 
@@ -1283,6 +1292,7 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
 
         // Hide on-screen touch controls when a physical controller is connected
         setControlsVisible(!hasController);
+        applyFrontendChrome();
 
         // Show controller hint when a controller is newly connected
         if (hasController && !mPreviousControllerState) {
@@ -2077,6 +2087,7 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
                     btn_pause_play.setVisibility(View.VISIBLE);
                     btn_pause_play.setIcon(ContextCompat.getDrawable(this, R.drawable.play_pause_24px));
                 }
+                applyFrontendChrome();
             });
         }
     }
@@ -2644,6 +2655,7 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
                 }
             } catch (Throwable ignored) {}
         }
+        applyFrontendChrome();
     }
 
     // Call this method when game starts/stops to update button visibility
@@ -3081,6 +3093,7 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
         
         // Show gamepad controls based on preferences
         updateUiForControllerPresence();
+        applyFrontendChrome();
     }
     
     private void hideGamepadControls() {

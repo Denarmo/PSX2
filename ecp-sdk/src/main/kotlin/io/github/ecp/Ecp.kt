@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.net.InetAddress
 
 /** Names from the specification (sections 2, 3 and 4). */
 object Ecp {
@@ -22,6 +23,9 @@ object Ecp {
     const val EXTRA_PATH = "io.github.ecp.extra.PATH"
 
     const val MAX_FRAME = 16 * 1024 * 1024
+
+    /** 127.0.0.1 (sections 2 and 3). InetAddress.getLoopbackAddress() is ::1 on Android. */
+    val LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
 
     /**
      * The capabilities that allow each request (section 6): any one of them will do, and an empty

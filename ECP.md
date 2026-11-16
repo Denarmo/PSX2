@@ -28,7 +28,8 @@ with its library, settings and menus. The ECP work is in these places:
 | `EcpPlayActivity.java` | A subclass of `MainActivity`, the normal game screen, that owns one session. Without the ECP extras (level 0) it boots the intent's data with PSX2's own menus. |
 | `EcpSession.java` | The session on top of the SDK's `EcpEngine`: launch, lifecycle events, every level 2 request, the menu chord and the menu hand-over. |
 | `EcpSettings.java` | The settings schema: the standard keys PSX2 has and its own under `psx2.`. |
-| `ecp-sdk/` | The ECP Android SDK (MIT), vendored unchanged from the protocol repository (commit `6a3a1d3`, build file included) as the Gradle module `:ecp`. It does the channel (loopback TCP, framing, auth), hello, request routing, the `paused`/`resumed` bookkeeping, `stopped` and `MENU_INTENT`. Requests run one at a time on the SDK's own worker thread, so handlers block on the core where PSX2 does (a state save waits up to 5 s); `stop` and a closed channel come on its separate control thread. Anything that touches the activity goes through `runOnUiThread`. |
+| `EcpConfigure.java`, `EcpConfigureReceiver.java` | `configure` (below): the frontend's BIOS, game folders and settings kept as PSX2's own, in a session or from the `io.github.ecp.action.CONFIGURE` broadcast. |
+| `ecp-sdk/` | The ECP Android SDK (MIT), vendored unchanged from the protocol repository (commit `5bb80fd`, build file included) as the Gradle module `:ecp`. It does the channel (loopback TCP, framing, auth), hello, request routing, the `paused`/`resumed` bookkeeping, `stopped` and `MENU_INTENT`. Requests run one at a time on the SDK's own worker thread, so handlers block on the core where PSX2 does (a state save waits up to 5 s); `stop` and a closed channel come on its separate control thread. Anything that touches the activity goes through `runOnUiThread`. |
 | `MainActivity.java` | Protected hooks with no-op defaults, so the base activity behaves as upstream: `isLaunchedForGame`, `isFrontendMenuAttached`, `onFrontendMenuRequested`, `isFrontendPauseRequested`, `applySessionSettings`, `onEmulationThreadEnded`, `onSessionInputEvent`, `startSessionGame`, `refreshPauseState`. |
 | `NativeApp.java`, `cpp/native-lib.cpp` | New JNI functions prefixed `ecp` (below). Two changes to the VM loop that also apply to PSX2's own UI: while paused it now serves queued CPU-thread work (it used to sleep 250 ms and leave the queue alone, so a speed change made while paused waited for the game to resume), and it carries out a requested reset (`VMState::Resetting` used to leave the loop idling for ever). |
 | `app/build.gradle.kts` | `applicationId`, `versionName` `1.3.2-ecp1`, APK name, and signing from a properties file outside the tree (`-Ppsx2.keystoreProperties=<path>` or `PSX2_KEYSTORE_PROPERTIES`). |
@@ -86,6 +87,7 @@ wizard, the game library, the BIOS prompt and the RetroAchievements prompt.
 | `notify` | `notify` | `ecpNotify`: `Host::AddOSDMessage`. |
 | `perf` event | `perf` | Once a second while not paused, from `ecpGetPerf`: `fps` (`PerformanceMetrics::GetFPS`, vertical syncs), `target_fps` (`VMManager::GetFrameRate`), `speed`, `frame_ms`, `cpu_ms`, `gpu_ms`, plus `internal_fps` (the game's own frame rate where PCSX2 can tell). |
 | `get_schema`, `get_settings`, `set_setting` | `settings` | `EcpSettings` (below). |
+| `configure` | `configure` | `EcpConfigure` (below). |
 | `stop` | | `NativeApp.shutdown()` (the core writes the memory cards as it shuts down), wait for the VM thread, answer, `stopped` (`frontend`), finish. It runs on the SDK's control thread, so a slow request cannot hold it up. |
 | channel closed | | The same shutdown without events, then the activity finishes; `onDestroy` ends the process as PSX2's own exit does. |
 
@@ -124,6 +126,27 @@ launch settings again once the first frame is out, where they differ.
 
 All of them apply `now`. Values are read back from the core (`ecpGetIniValue`), so `get_settings`
 shows what is in effect, per-game overrides included.
+
+### Configure
+
+`configure` (SPEC 6.6) sets PSX2 ECP up as its own setup wizard would, so the app opened from the
+app list goes straight to the library. The frontend sends it in a session before `launch`, and
+outside one as the `io.github.ecp.action.CONFIGURE` broadcast (`EcpConfigureReceiver`, the same
+code on a thread of its own).
+
+- `bios`: each file, or each file in a folder (three levels deep), is copied into PSX2's BIOS
+  folder (`Android/data/<package>/files/bios`) and kept only when `BiosVerifier` recognises it, as
+  PSX2's own Import BIOS does. A file already there with the same size is skipped.
+- `game_folders`: document tree URIs. PSX2 takes their persistable read grant and puts them in
+  `games_folder_uris_json`, the list its folder picker writes. They replace the folders the last
+  `configure` set (kept apart in `ecp_configured_game_folders_json`, whose grants are given back),
+  never those the player picked. The cached game list is dropped when the folders change.
+- `settings`: the keys PSX2's settings drawer keeps go to its preferences (`renderer`,
+  `aspect_ratio`, `upscale_multiplier`, `widescreen_patches`, `vsync_enabled`,
+  `blending_accuracy`, `no_interlacing_patches`, `edge_crop`, `load_textures`). Others stay
+  session-only.
+- With a verified retail BIOS and a game folder in place, `first_run_done` and
+  `has_opened_games_after_setup` are set: no wizard, and the library opens at start.
 
 ### Input
 

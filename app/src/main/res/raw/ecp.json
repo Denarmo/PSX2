@@ -7,7 +7,7 @@
   "systems": ["ps2"],
   "extensions": ["iso", "bin", "img", "mdf", "nrg", "chd", "cso", "zso", "gz"],
   "capabilities": ["pause", "menu", "states", "state_thumbnails", "reset", "fast_forward",
-                   "slow_motion", "settings", "screenshot", "perf", "hud", "notify", "volume"],
+                   "slow_motion", "settings", "screenshot", "perf", "hud", "notify", "volume", "configure"],
   "needs": ["bios"],
   "settings": "schema"
 }

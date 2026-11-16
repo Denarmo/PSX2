@@ -87,6 +87,14 @@
                 android:name="io.github.ecp.descriptor"
                 android:resource="@raw/ecp" />
         </activity>
+        <!-- ECP configure outside a session: a frontend sets PSX2 up (see ECP.md). -->
+        <receiver
+            android:name=".EcpConfigureReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.github.ecp.action.CONFIGURE" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

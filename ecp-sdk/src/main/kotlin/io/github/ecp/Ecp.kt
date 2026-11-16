@@ -6,7 +6,6 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.net.InetAddress
 
 /** Names from the specification (sections 2, 3 and 4). */
 object Ecp {
@@ -22,10 +21,16 @@ object Ecp {
     const val EXTRA_FULLSCREEN = "io.github.ecp.extra.FULLSCREEN"
     const val EXTRA_PATH = "io.github.ecp.extra.PATH"
 
+    /** The engine's setup outside a session (section 6.6): a broadcast to its receiver. */
+    const val ACTION_CONFIGURE = "io.github.ecp.action.CONFIGURE"
+    /** The configure request's fields, as a JSON object in a String. */
+    const val EXTRA_CONFIGURE = "io.github.ecp.extra.CONFIGURE"
+
     const val MAX_FRAME = 16 * 1024 * 1024
 
-    /** 127.0.0.1 (sections 2 and 3). InetAddress.getLoopbackAddress() is ::1 on Android. */
-    val LOOPBACK: InetAddress = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+    /** 127.0.0.1, as SPEC section 3 says. Not getLoopbackAddress(), which is ::1 on Android. */
+    @JvmField
+    val LOOPBACK: java.net.InetAddress = java.net.InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
 
     /**
      * The capabilities that allow each request (section 6): any one of them will do, and an empty
@@ -42,6 +47,7 @@ object Ecp {
         "screenshot" to listOf("screenshot"), "set_volume" to listOf("volume"), "hud_level" to listOf("hud"),
         "notify" to listOf("notify"), "set_cheats" to listOf("cheats"),
         "list_discs" to listOf("discs"), "set_disc" to listOf("discs"),
+        "configure" to listOf("configure"),
     )
 
     /** An error object: `{"code":..., "message":..., "detail":...}`. */

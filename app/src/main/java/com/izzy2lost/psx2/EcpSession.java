@@ -259,6 +259,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
     @Override public void handleSetCheats(EcpEngine.Request r) { r.unsupported(); }
     @Override public void handleListDiscs(EcpEngine.Request r) { r.unsupported(); }
     @Override public void handleSetDisc(EcpEngine.Request r) { r.unsupported(); }
+    @Override public void handleConfigure(EcpEngine.Request r) { handleRequest(r); }
     @Override public void onResult(long id, JSONObject msg) {}
 
     @Override
@@ -352,6 +353,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
             case "get_schema": r.ok(new JSONObject().put("settings", mSettings.schema())); break;
             case "get_settings": r.ok(new JSONObject().put("values", mSettings.values())); break;
             case "set_setting": doSetSetting(r); break;
+            case "configure": r.ok(EcpConfigure.apply(mActivity, r.getMsg())); break;
             default: r.error("unsupported", null, "unknown request " + type);
         }
     }
@@ -366,6 +368,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
             case "hud_level": return "hud";
             case "notify": return "notify";
             case "get_schema": case "get_settings": case "set_setting": return "settings";
+            case "configure": return "configure";
             default: return null; // set_speed checks fast_forward / slow_motion itself
         }
     }

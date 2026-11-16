@@ -63,8 +63,8 @@ android {
         applicationId = "com.izzy2lost.psx2.ecp"
         minSdk = 26
         targetSdk = 36
-        versionCode = 36
-        versionName = "1.3.2-ecp3"
+        versionCode = 37
+        versionName = "1.3.2-ecp4"
 
         externalNativeBuild {
             cmake {

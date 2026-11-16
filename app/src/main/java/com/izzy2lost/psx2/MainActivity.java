@@ -2561,8 +2561,8 @@ public class MainActivity extends AppCompatActivity implements GamesCoverDialogF
     }
 
     private void showControllerHintIfNeeded() {
-        // Prevent multiple dialogs from showing
-        if (mControllerHintShowing) return;
+        // Prevent multiple dialogs from showing; a game started for a frontend shows none.
+        if (mControllerHintShowing || isLaunchedForGame()) return;
         
         SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
         boolean hasShownHint = prefs.getBoolean("controller_hint_shown", false);

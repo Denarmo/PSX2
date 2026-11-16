@@ -1,9 +1,18 @@
 package com.izzy2lost.psx2;
 
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.InputEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ImageView;
+
+import java.io.InputStream;
 
 import androidx.annotation.NonNull;
 import androidx.drawerlayout.widget.DrawerLayout;
@@ -19,8 +28,15 @@ import io.github.ecp.EcpEngine;
 public class EcpPlayActivity extends MainActivity {
     private static final String TAG = "EcpPlayActivity";
 
+    private static final String EXTRA_COVER = "io.github.ecp.extra.COVER";
+    private static final String EXTRA_COVER_COLOR = "io.github.ecp.extra.COVER_COLOR";
+    /** The cover goes even when no first frame is seen, so a stuck boot is not hidden. */
+    private static final long COVER_LONGEST_MS = 20000;
+    private static final long COVER_FADE_MS = 400;
+
     private EcpSession mSession;
     private boolean mFinishing;
+    private View mCover;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -28,6 +44,7 @@ public class EcpPlayActivity extends MainActivity {
         Intent intent = getIntent();
         mSession = EcpSession.from(this, intent);
         if (mSession != null) {
+            showCover(intent);
             mSession.start();
         } else if (intent != null && intent.getData() != null) {
             startSessionGame(intent.getDataString());
@@ -55,6 +72,43 @@ public class EcpPlayActivity extends MainActivity {
     protected void onDestroy() {
         if (mSession != null) mSession.onActivityDestroyed();
         super.onDestroy();
+    }
+
+    /**
+     * Until the game's first frame the frontend's own screen as it was when it started the game
+     * (EXTRA_COVER, on its colour) covers PSX2's boot: the change of app is not seen.
+     */
+    private void showCover(Intent intent) {
+        ImageView view = new ImageView(this);
+        view.setBackgroundColor(intent.getIntExtra(EXTRA_COVER_COLOR, Color.BLACK));
+        view.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        view.setClickable(true);
+        Uri uri = intent.getParcelableExtra(EXTRA_COVER);
+        if (uri != null) {
+            try (InputStream in = getContentResolver().openInputStream(uri)) {
+                Bitmap picture = in != null ? BitmapFactory.decodeStream(in) : null;
+                if (picture != null) view.setImageBitmap(picture);
+            } catch (Exception e) {
+                Log.w(TAG, "The frontend's cover could not be read", e);
+            }
+        }
+        addContentView(view, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        mCover = view;
+        view.postDelayed(this::hideCover, COVER_LONGEST_MS);
+    }
+
+    /** The game's first frame is up: the cover fades away. Any thread. */
+    void hideCover() {
+        runOnUiThread(() -> {
+            View cover = mCover;
+            if (cover == null) return;
+            mCover = null;
+            cover.animate().alpha(0f).setDuration(COVER_FADE_MS).withEndAction(() -> {
+                ViewGroup parent = (ViewGroup) cover.getParent();
+                if (parent != null) parent.removeView(cover);
+            });
+        });
     }
 
     /** Called on the UI thread once the frontend's hello settled the capabilities. */

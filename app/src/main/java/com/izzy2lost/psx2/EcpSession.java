@@ -167,6 +167,9 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
             }
         }
         applyVolume();
+        // The frontend tells the player what it needs to; PSX2's own messages ("1 game patches
+        // are active", the blending accuracy) would cover the game's first seconds.
+        NativeApp.setOsdMessagesVisible(false);
     }
 
     /** Called on the emulation thread when the VM thread returns. */
@@ -499,6 +502,7 @@ final class EcpSession implements EcpEngine.Callbacks, EcpSettings.SessionState 
                 if (perf != null && perf.length > 8 && perf[7] > 0 && perf[8] >= mDrawnAtLaunch + 2
                         && NativeApp.isVMActive()) {
                     mFirstFrame = true;
+                    mActivity.hideCover();
                     mEngine.firstFrame();
                     mEngine.running();
                     // runVMThread applies PSX2's per-game overrides after our launch settings;

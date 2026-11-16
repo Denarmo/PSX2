@@ -99,6 +99,9 @@ public class NativeApp {
     }
 	public static native void renderPreloading(int value);
 
+	// PSX2's OSD messages (not the HUD): off in a frontend's session, for the session only
+	public static native void setOsdMessagesVisible(boolean visible);
+
 	// HUD/OSD visibility toggle
 	public static native void setHudVisible(boolean visible);
     public static void setHudVisibleAsync(boolean visible) {

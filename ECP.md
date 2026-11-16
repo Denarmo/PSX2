@@ -43,6 +43,14 @@ The frontend starts `EcpPlayActivity` with the extras of SPEC section 3. The act
 game screen, so its surface and input are the ones PSX2 already tested; it only skips the setup
 wizard, the game library, the BIOS prompt and the RetroAchievements prompt.
 
+Its theme (`EcpPlayTheme`) has no starting window and no bars, and the frontend starts it with no
+window animation, so the frontend's screen stays until PSX2 draws. PSX2 then draws a cover: the
+image of `io.github.ecp.extra.COVER` (a content URI, the frontend's screen as it was) on
+`io.github.ecp.extra.COVER_COLOR`, or black. It fades out at `first_frame` (step 4), or after
+20 s, so the boot's black screen is never seen. PSX2's OSD messages ("1 game patches are
+active", the blending accuracy) are off for the session: the frontend tells the player what it
+needs to. The setting is in memory only, so PSX2 opened on its own shows them as before.
+
 1. `EcpSession.start()` connects to `127.0.0.1:PORT` on a worker thread, sends `auth`, then
    `hello` with the descriptor. Without the frontend's hello within 10 s, or without `launch`
    within 60 s, the activity finishes.
@@ -61,7 +69,7 @@ wizard, the game library, the BIOS prompt and the RetroAchievements prompt.
    - Another game running in PSX2 ECP's own screen gives `busy`.
    - Otherwise the result is ok, `loading` follows (with the title), and the game boots through
      the same `restartEmuThread` path PSX2's library uses.
-4. `first_frame` and `running` are sent once the GS has drawn into two frames since `launch`
+4. `first_frame` and `running` are sent, and the cover fades, once the GS has drawn into two frames since `launch`
    (`ecpGetPerf`: PSX2's drawn-frame counter for hardware renderers, the frame number for the
    software renderer). The frame counter alone counts the black vsyncs of the boot, and a state
    saved then had no thumbnail.

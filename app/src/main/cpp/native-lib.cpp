@@ -383,6 +383,17 @@ Java_com_izzy2lost_psx2_NativeApp_setBlendingAccuracy(JNIEnv* env, jclass, jint 
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_com_izzy2lost_psx2_NativeApp_setOsdMessagesVisible(JNIEnv* env, jclass, jboolean visible)
+{
+    // The settings layer is in memory: PSX2 opened on its own shows its messages as before.
+    s_settings_interface.SetIntValue("EmuCore/GS", "OsdMessagesPos",
+        static_cast<int>(visible == JNI_TRUE ? OsdOverlayPos::TopLeft : OsdOverlayPos::None));
+    if (VMManager::HasValidVM())
+        VMManager::ApplySettings();
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_com_izzy2lost_psx2_NativeApp_setVsyncEnabled(JNIEnv* env, jclass, jboolean enabled)
 {
     s_settings_interface.SetBoolValue("EmuCore/GS", "VsyncEnable", enabled == JNI_TRUE);

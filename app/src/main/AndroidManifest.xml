@@ -72,6 +72,7 @@
         <!-- Emulator Control Protocol: a frontend starts one game here (see ECP.md). -->
         <activity
             android:name=".EcpPlayActivity"
+            android:theme="@style/EcpPlayTheme"
             android:configChanges="keyboard|keyboardHidden|navigation|touchscreen|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|density|fontScale|fontWeightAdjustment|layoutDirection|locale|colorMode"
             android:launchMode="singleTask"
             android:taskAffinity="${applicationId}.play"
